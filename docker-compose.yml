@@ -1,0 +1,147 @@
+version: '3.8'
+
+services:
+  # MySQL service
+  db:
+    image: mysql:8
+    restart: always
+    environment:
+      MYSQL_HOST: db
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3309:3306"
+    volumes:
+      - mysql_vol:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      timeout: 20s
+      retries: 10
+      interval: 10s
+
+  # Rails application service
+  rails:
+    build: .
+    container_name: rails
+    environment:
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_HOST: db
+      RAILS_ENV: production # development
+      RAILS_MASTER_KEY: 61def8862ea958c3301eb21c807cae0e # this is just an example
+      ES_PORT: 9200
+      ES_HOST: 'elasticsearch'
+      ELASTICSEARCH_URL: "http://elasticsearch:9200"
+      REDIS_URL: redis://redis:6379/1
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    restart: always
+    volumes:
+      - ./:/rails
+      - /rails/tmp
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    links:
+      - db
+      - sidekiq
+      - elasticsearch
+
+  # Elasticsearch service
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.1
+    container_name: elasticsearch
+    environment:
+      - node.name=es
+      - cluster.name=cluster
+      - discovery.seed_hosts=es
+      - bootstrap.memory_lock=true
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - http.port=9200
+      - xpack.security.enabled=false
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_vol:/usr/share/elasticsearch/data
+    restart: always
+    ports:
+      - 9200:9200
+    depends_on:
+      - db
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Redis service
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 1s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      - db
+    volumes:
+      - redis_vol:/data
+
+  # Sidekiq worker
+  sidekiq:
+    build: .
+    command: "bundle exec sidekiq"
+    container_name: sidekiq
+    environment:
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_HOST: db
+      RAILS_ENV: production
+      ES_PORT: 9200
+      ES_HOST: 'elasticsearch'
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/1
+      SECRET_KEY_BASE: a18f3xkflfcqjtdolpx6q4lfk7zlk2hh # this is just an example
+    restart: always
+    depends_on:
+      - redis
+    volumes:
+    - ./:/rails   # I really hate hate docker >:(
+
+  go-service:
+    build: .
+    container_name: golang
+    working_dir: /rails/app/go/
+    command: "go run ."
+    restart: always
+    environment:
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_HOST: db
+      DB_NAME: chat_on_rails_production
+      DB_PORT: 3306
+    depends_on:
+      - db
+      - redis
+      - rails
+    volumes:
+      - ./:/rails
+
+volumes:
+  mysql_vol:
+  es_vol:
+  redis_vol:
